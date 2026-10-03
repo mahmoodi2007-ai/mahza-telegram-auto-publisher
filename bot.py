@@ -1,3 +1,4 @@
+```python
 import json
 import os
 import time
@@ -51,6 +52,7 @@ if not TELEGRAM_CHANNEL_ID:
 
 def load_published_ids():
     if not STATE_FILE.exists():
+        print("WARNING: published_products.json not found.")
         return set()
 
     try:
@@ -59,7 +61,12 @@ def load_published_ids():
 
         ids = data.get("published_ids", [])
 
-        return {int(product_id) for product_id in ids}
+        published_ids = {
+            int(product_id)
+            for product_id in ids
+        }
+
+        return published_ids
 
     except Exception as e:
         print(f"WARNING: Could not read state file: {e}")
@@ -414,7 +421,10 @@ def send_product_to_telegram(product):
         telegram_api_url("sendMediaGroup"),
         data={
             "chat_id": TELEGRAM_CHANNEL_ID,
-            "media": json.dumps(media, ensure_ascii=False),
+            "media": json.dumps(
+                media,
+                ensure_ascii=False
+            ),
         },
         timeout=90,
     )
@@ -442,108 +452,26 @@ def main():
         f"MAX_PRODUCTS_PER_RUN = {MAX_PRODUCTS_PER_RUN}"
     )
 
+    # --------------------------------------------------------
+    # Load published IDs
+    # --------------------------------------------------------
+
     published_ids = load_published_ids()
 
+    # DEBUG:
+    # Show exactly which product IDs were loaded
+    # from published_products.json
+
     print(
-        f"Previously published products: {len(published_ids)}"
+        f"Published IDs loaded: {sorted(published_ids)}"
     )
 
-    products = get_products()
-
-    new_products = []
-
-    for product in products:
-
-        product_id = product.get("id")
-
-        if product_id is None:
-            continue
-
-        try:
-            product_id = int(product_id)
-
-        except Exception:
-            continue
-
-        if product_id not in published_ids:
-            new_products.append(product)
-
     print(
-        f"New products found: {len(new_products)}"
+        f"Previously published products: "
+        f"{len(published_ids)}"
     )
 
     # --------------------------------------------------------
-    # TEST MODE
-    # --------------------------------------------------------
-
-    if TEST_MODE:
-        selected_products = new_products[:1]
-
-    # --------------------------------------------------------
-    # Normal mode
-    # --------------------------------------------------------
-
-    else:
-
-        if MAX_PRODUCTS_PER_RUN > 0:
-            selected_products = new_products[
-                :MAX_PRODUCTS_PER_RUN
-            ]
-        else:
-            selected_products = new_products
-
-    print(
-        f"Products selected for this run: "
-        f"{len(selected_products)}"
-    )
-
-    # --------------------------------------------------------
-    # Publish
-    # --------------------------------------------------------
-
-    for product in selected_products:
-
-        product_id = product.get("id")
-
-        try:
-
-            success = send_product_to_telegram(product)
-
-            if success:
-
-                # VERY IMPORTANT:
-                # Save immediately after successful Telegram send.
-
-                published_ids.add(int(product_id))
-
-                save_published_ids(published_ids)
-
-                print(
-                    f"SUCCESS: Product {product_id} "
-                    f"published and saved."
-                )
-
-                print(
-                    f"Published IDs now: "
-                    f"{len(published_ids)}"
-                )
-
-        except Exception as e:
-
-            print(
-                f"ERROR publishing product "
-                f"{product_id}: {e}"
-            )
-
-            # Do NOT add failed products
-            # to published_ids.
-
-        time.sleep(2)
-
-    print("=" * 60)
-    print("Finished.")
-    print("=" * 60)
-
-
-if __name__ == "__main__":
-    main()
+    # Get products
+    #
+```
