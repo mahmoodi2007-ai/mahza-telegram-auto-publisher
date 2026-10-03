@@ -21,7 +21,7 @@ jobs:
     steps:
 
       - name: Checkout repository
-       uses: actions/checkout@v6
+        uses: actions/checkout@v6
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -39,8 +39,8 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
 
-          TEST_MODE: "true"
-          MAX_PRODUCTS_PER_RUN: "1"
+          TEST_MODE: "false"
+          MAX_PRODUCTS_PER_RUN: "0"
 
         run: |
           python bot.py
