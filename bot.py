@@ -1,7 +1,4 @@
-```python
-
 print("BOT.PY STARTED")
-
 
 import json
 import os
@@ -478,4 +475,3 @@ def main():
     # --------------------------------------------------------
     # Get products
     #
-```
