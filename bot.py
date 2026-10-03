@@ -71,7 +71,6 @@ def load_published_ids():
             []
         )
 
-        # DEBUG
         print(
             f"RAW IDS FROM FILE: {ids}"
         )
@@ -221,10 +220,87 @@ def get_product_url(product):
 
 
 # ============================================================
-# Images
+# Image helpers
 # ============================================================
 
+def extract_image_url(image):
+
+    if not image:
+        return None
+
+    # --------------------------------------------------------
+    # Image is already a string
+    # --------------------------------------------------------
+
+    if isinstance(
+        image,
+        str
+    ):
+
+        return image.strip()
+
+
+    # --------------------------------------------------------
+    # Image is a dictionary
+    # --------------------------------------------------------
+
+    if isinstance(
+        image,
+        dict
+    ):
+
+        possible_keys = [
+            "url",
+            "image",
+            "src",
+            "file",
+            "original",
+            "original_url",
+            "image_url",
+        ]
+
+        for key in possible_keys:
+
+            value = image.get(
+                key
+            )
+
+            if isinstance(
+                value,
+                str
+            ) and value.strip():
+
+                return value.strip()
+
+            # Sometimes the value itself is another dictionary
+            if isinstance(
+                value,
+                dict
+            ):
+
+                nested_url = extract_image_url(
+                    value
+                )
+
+                if nested_url:
+                    return nested_url
+
+    return None
+
+
 def normalize_image_url(image_url):
+
+    if not image_url:
+        return None
+
+    # Safety check
+    if not isinstance(
+        image_url,
+        str
+    ):
+        return None
+
+    image_url = image_url.strip()
 
     if not image_url:
         return None
@@ -239,10 +315,14 @@ def normalize_image_url(image_url):
     ):
         return image_url
 
-    if image_url.startswith("//"):
+    if image_url.startswith(
+        "//"
+    ):
         return "https:" + image_url
 
-    if image_url.startswith("/"):
+    if image_url.startswith(
+        "/"
+    ):
         return SITE_URL + image_url
 
     return image_url
@@ -252,48 +332,58 @@ def get_product_images(product):
 
     images = []
 
+    # --------------------------------------------------------
+    # Default image
+    # --------------------------------------------------------
+
     default_image = product.get(
         "default_image"
     )
 
-    if default_image:
+    default_image_url = extract_image_url(
+        default_image
+    )
+
+    if default_image_url:
+
         images.append(
-            default_image
+            default_image_url
         )
+
+
+    # --------------------------------------------------------
+    # Product images
+    # --------------------------------------------------------
 
     product_images = product.get(
         "images",
         []
     )
 
+    if not isinstance(
+        product_images,
+        list
+    ):
+
+        product_images = []
+
+
     for image in product_images:
 
-        if isinstance(
-            image,
-            str
-        ):
-
-            image_url = image
-
-        elif isinstance(
-            image,
-            dict
-        ):
-
-            image_url = (
-                image.get("url")
-                or image.get("image")
-                or image.get("src")
-            )
-
-        else:
-
-            image_url = None
+        image_url = extract_image_url(
+            image
+        )
 
         if image_url:
+
             images.append(
                 image_url
             )
+
+
+    # --------------------------------------------------------
+    # Normalize + remove duplicates
+    # --------------------------------------------------------
 
     result = []
 
@@ -537,7 +627,6 @@ def send_product_to_telegram(product):
         f"Images found: "
         f"{len(images)}"
     )
-
 
     # --------------------------------------------------------
     # No image
