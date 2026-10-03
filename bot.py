@@ -16,7 +16,6 @@ MIXIN_API_URL = "https://mahzacollection.ir/api/v4/products/"
 SITE_URL = "https://mahzacollection.ir"
 
 STATE_FILE = Path("published_products.json")
-
 PAGE_SIZE = 50
 
 MIXIN_API_KEY = os.getenv("MIXIN_API_KEY", "").strip()
@@ -194,6 +193,7 @@ def get_product_images(product):
     product_images = product.get("images", [])
 
     for image in product_images:
+
         if isinstance(image, str):
             image_url = image
 
@@ -213,6 +213,7 @@ def get_product_images(product):
     result = []
 
     for image in images:
+
         image = normalize_image_url(image)
 
         if image and image not in result:
@@ -229,11 +230,13 @@ def get_product_images(product):
 # ============================================================
 
 def format_price(price):
+
     if price is None:
         return "تماس بگیرید"
 
     try:
         number = int(float(price))
+
         return f"{number:,} تومان"
 
     except Exception:
@@ -241,26 +244,40 @@ def format_price(price):
 
 
 def get_discount_info(product):
+
     price = product.get("price")
-    compare_at_price = product.get("compare_at_price")
+
+    compare_at_price = product.get(
+        "compare_at_price"
+    )
 
     if not price or not compare_at_price:
         return None
 
     try:
+
         price = float(price)
-        compare_at_price = float(compare_at_price)
+
+        compare_at_price = float(
+            compare_at_price
+        )
 
         if compare_at_price <= price:
             return None
 
         discount_percent = round(
-            ((compare_at_price - price) / compare_at_price) * 100
+            (
+                (compare_at_price - price)
+                / compare_at_price
+            )
+            * 100
         )
 
         return {
             "percent": discount_percent,
-            "old_price": format_price(compare_at_price),
+            "old_price": format_price(
+                compare_at_price
+            ),
         }
 
     except Exception:
@@ -272,33 +289,52 @@ def get_discount_info(product):
 # ============================================================
 
 def create_caption(product):
-    name = product.get("name", "محصول")
+
+    name = product.get(
+        "name",
+        "محصول"
+    )
 
     brand = product.get("brand")
 
     if isinstance(brand, dict):
+
         brand_name = (
             brand.get("name")
             or brand.get("title")
             or ""
         )
+
     else:
+
         brand_name = brand or ""
 
-    price = format_price(product.get("price"))
+    price = format_price(
+        product.get("price")
+    )
 
-    discount = get_discount_info(product)
+    discount = get_discount_info(
+        product
+    )
 
-    product_url = get_product_url(product)
+    product_url = get_product_url(
+        product
+    )
 
     lines = []
 
-    lines.append(f"🛍️ {name}")
+    lines.append(
+        f"🛍️ {name}"
+    )
 
     if brand_name:
-        lines.append(f"🏷️ برند: {brand_name}")
+
+        lines.append(
+            f"🏷️ برند: {brand_name}"
+        )
 
     if discount:
+
         lines.append(
             f"💰 قیمت: {price}"
         )
@@ -312,6 +348,7 @@ def create_caption(product):
         )
 
     else:
+
         lines.append(
             f"💰 قیمت: {price}"
         )
@@ -340,6 +377,7 @@ def create_caption(product):
 # ============================================================
 
 def telegram_api_url(method):
+
     return (
         f"https://api.telegram.org/"
         f"bot{TELEGRAM_BOT_TOKEN}/{method}"
@@ -347,32 +385,49 @@ def telegram_api_url(method):
 
 
 def send_product_to_telegram(product):
+
     product_id = product.get("id")
-    product_name = product.get("name", "محصول")
 
-    images = get_product_images(product)
+    product_name = product.get(
+        "name",
+        "محصول"
+    )
 
-    caption = create_caption(product)
+    images = get_product_images(
+        product
+    )
+
+    caption = create_caption(
+        product
+    )
 
     print(
-        f"Sending product {product_id}: {product_name}"
+        f"Sending product {product_id}: "
+        f"{product_name}"
     )
 
     print(
         f"Images found: {len(images)}"
     )
 
+
     # --------------------------------------------------------
     # No image
     # --------------------------------------------------------
 
     if not images:
+
         response = requests.post(
-            telegram_api_url("sendMessage"),
+
+            telegram_api_url(
+                "sendMessage"
+            ),
+
             data={
                 "chat_id": TELEGRAM_CHANNEL_ID,
                 "text": caption,
             },
+
             timeout=30,
         )
 
@@ -380,18 +435,25 @@ def send_product_to_telegram(product):
 
         return True
 
+
     # --------------------------------------------------------
     # One image
     # --------------------------------------------------------
 
     if len(images) == 1:
+
         response = requests.post(
-            telegram_api_url("sendPhoto"),
+
+            telegram_api_url(
+                "sendPhoto"
+            ),
+
             data={
                 "chat_id": TELEGRAM_CHANNEL_ID,
                 "photo": images[0],
                 "caption": caption,
             },
+
             timeout=60,
         )
 
@@ -399,13 +461,16 @@ def send_product_to_telegram(product):
 
         return True
 
+
     # --------------------------------------------------------
     # Multiple images - maximum 3
     # --------------------------------------------------------
 
     media = []
 
-    for index, image_url in enumerate(images[:3]):
+    for index, image_url in enumerate(
+        images[:3]
+    ):
 
         item = {
             "type": "photo",
@@ -413,13 +478,20 @@ def send_product_to_telegram(product):
         }
 
         if index == 0:
+
             item["caption"] = caption
+
             item["parse_mode"] = "HTML"
 
         media.append(item)
 
+
     response = requests.post(
-        telegram_api_url("sendMediaGroup"),
+
+        telegram_api_url(
+            "sendMediaGroup"
+        ),
+
         data={
             "chat_id": TELEGRAM_CHANNEL_ID,
             "media": json.dumps(
@@ -427,6 +499,7 @@ def send_product_to_telegram(product):
                 ensure_ascii=False
             ),
         },
+
         timeout=90,
     )
 
@@ -442,7 +515,11 @@ def send_product_to_telegram(product):
 def main():
 
     print("=" * 60)
-    print("Mahza Collection Telegram Publisher")
+
+    print(
+        "Mahza Collection Telegram Publisher"
+    )
+
     print("=" * 60)
 
     print(
@@ -450,8 +527,10 @@ def main():
     )
 
     print(
-        f"MAX_PRODUCTS_PER_RUN = {MAX_PRODUCTS_PER_RUN}"
+        f"MAX_PRODUCTS_PER_RUN = "
+        f"{MAX_PRODUCTS_PER_RUN}"
     )
+
 
     # --------------------------------------------------------
     # Load published IDs
@@ -459,12 +538,9 @@ def main():
 
     published_ids = load_published_ids()
 
-    # DEBUG:
-    # Show exactly which product IDs were loaded
-    # from published_products.json
-
     print(
-        f"Published IDs loaded: {sorted(published_ids)}"
+        f"Published IDs loaded: "
+        f"{sorted(published_ids)}"
     )
 
     print(
@@ -472,6 +548,144 @@ def main():
         f"{len(published_ids)}"
     )
 
+
     # --------------------------------------------------------
     # Get products
-    #
+    # --------------------------------------------------------
+
+    products = get_products()
+
+
+    # --------------------------------------------------------
+    # Find new products
+    # --------------------------------------------------------
+
+    new_products = []
+
+    for product in products:
+
+        product_id = product.get(
+            "id"
+        )
+
+        if product_id is None:
+            continue
+
+        try:
+
+            product_id = int(
+                product_id
+            )
+
+        except Exception:
+
+            continue
+
+        if product_id not in published_ids:
+
+            new_products.append(
+                product
+            )
+
+
+    print(
+        f"New products found: "
+        f"{len(new_products)}"
+    )
+
+
+    # --------------------------------------------------------
+    # Select products
+    # --------------------------------------------------------
+
+    if TEST_MODE:
+
+        selected_products = (
+            new_products[:1]
+        )
+
+    else:
+
+        if MAX_PRODUCTS_PER_RUN > 0:
+
+            selected_products = (
+                new_products[
+                    :MAX_PRODUCTS_PER_RUN
+                ]
+            )
+
+        else:
+
+            selected_products = (
+                new_products
+            )
+
+
+    print(
+        f"Products selected for this run: "
+        f"{len(selected_products)}"
+    )
+
+
+    # --------------------------------------------------------
+    # Publish products
+    # --------------------------------------------------------
+
+    for product in selected_products:
+
+        product_id = product.get(
+            "id"
+        )
+
+        try:
+
+            success = (
+                send_product_to_telegram(
+                    product
+                )
+            )
+
+            if success:
+
+                published_ids.add(
+                    int(product_id)
+                )
+
+                save_published_ids(
+                    published_ids
+                )
+
+                print(
+                    f"SUCCESS: Product "
+                    f"{product_id} "
+                    f"published and saved."
+                )
+
+                print(
+                    f"Published IDs now: "
+                    f"{len(published_ids)}"
+                )
+
+        except Exception as e:
+
+            print(
+                f"ERROR publishing product "
+                f"{product_id}: {e}"
+            )
+
+        time.sleep(2)
+
+
+    print("=" * 60)
+
+    print("Finished.")
+
+    print("=" * 60)
+
+
+# ============================================================
+# Start program
+# ============================================================
+
+if __name__ == "__main__":
+    main()
