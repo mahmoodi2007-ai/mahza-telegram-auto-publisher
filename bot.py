@@ -204,19 +204,45 @@ def get_products():
     return all_products
 
 
-# ============================================================
-# Product URL
-# ============================================================
+    # --------------------------------------------------------
+    # Find new products
+    # --------------------------------------------------------
 
-def get_product_url(product):
+    new_products = []
 
-    product_id = product.get(
-        "id"
-    )
+    for product in products:
 
-    return (
-        f"{SITE_URL}/product/{product_id}/"
-    )
+        # ----------------------------------------------------
+        # فقط محصولات موجود
+        # ----------------------------------------------------
+
+        available = product.get("available")
+
+        if available is not True:
+            continue
+
+        product_id = product.get(
+            "id"
+        )
+
+        if product_id is None:
+            continue
+
+        try:
+
+            product_id = int(
+                product_id
+            )
+
+        except Exception:
+
+            continue
+
+        if product_id not in published_ids:
+
+            new_products.append(
+                product
+            )
 
 
 # ============================================================
