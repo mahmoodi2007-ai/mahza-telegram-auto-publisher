@@ -60,7 +60,12 @@ jobs:
           else
             git commit -m "Update published products"
 
-            git pull --rebase origin main
+            echo "Fetching latest main..."
+            git fetch origin main
 
+            echo "Rebasing local commit..."
+            git rebase origin/main
+
+            echo "Pushing updated main..."
             git push origin main
           fi
