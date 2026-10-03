@@ -1,0 +1,81 @@
+name: Mahza Collection Telegram Publisher
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    - cron: "*/30 * * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mahza-telegram-publisher
+  cancel-in-progress: false
+
+jobs:
+
+  publish-products:
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run publisher
+        env:
+          MIXIN_API_KEY: ${{ secrets.MIXIN_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+
+          # -----------------------------------------------
+          # TEST MODE
+          #
+          # true  = فقط یک محصول جدید
+          # false = همه محصولات جدید
+          # -----------------------------------------------
+
+          TEST_MODE: "true"
+
+          # 1 = یک محصول در هر اجرا
+          # 0 = بدون محدودیت
+
+          MAX_PRODUCTS_PER_RUN: "1"
+
+        run: |
+          python bot.py
+
+      - name: Save published products
+        run: |
+
+          git config user.name "Mahza Collection Bot"
+
+          git config user.email \
+            "mahza-collection-bot@users.noreply.github.com"
+
+          git add published_products.json
+
+          if git diff --cached --quiet; then
+
+            echo "No state changes to commit."
+
+          else
+
+            git commit \
+              -m "Update published products"
+
+            git push
+
+          fi
