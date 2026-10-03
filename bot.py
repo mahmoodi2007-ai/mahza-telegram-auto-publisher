@@ -1,4 +1,8 @@
 ```python
+
+print("BOT.PY STARTED")
+
+
 import json
 import os
 import time
