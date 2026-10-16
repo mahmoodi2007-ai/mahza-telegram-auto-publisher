@@ -1,22 +1,28 @@
+
 print("BOT.PY STARTED")
 
 import json
 import os
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 import requests
 
 
 # ============================================================
-# Configuration
+# CONFIGURATION
 # ============================================================
 
 MIXIN_API_URL = "https://mahzacollection.ir/api/v4/products/"
 SITE_URL = "https://mahzacollection.ir"
 
 STATE_FILE = Path("published_products.json")
+
 PAGE_SIZE = 50
+MAX_IMAGES = 3
+REQUEST_TIMEOUT = 40
+DELAY_BETWEEN_PRODUCTS = 2
 
 MIXIN_API_KEY = os.getenv("MIXIN_API_KEY", "").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -33,7 +39,7 @@ except ValueError:
 
 
 # ============================================================
-# Validation
+# VALIDATION
 # ============================================================
 
 if not MIXIN_API_KEY:
@@ -47,13 +53,24 @@ if not TELEGRAM_CHANNEL_ID:
 
 
 # ============================================================
-# State management
+# HTTP SESSION
+# ============================================================
+
+session = requests.Session()
+
+session.headers.update({
+    "User-Agent": "MahzaCollection-Telegram-Publisher/2.0"
+})
+
+
+# ============================================================
+# STATE MANAGEMENT
 # ============================================================
 
 def load_published_ids():
 
     if not STATE_FILE.exists():
-        print("WARNING: published_products.json not found.")
+        print("WARNING: State file not found.")
         return set()
 
     try:
@@ -62,218 +79,240 @@ def load_published_ids():
             STATE_FILE,
             "r",
             encoding="utf-8"
-        ) as f:
+        ) as file:
 
-            data = json.load(f)
+            data = json.load(file)
 
-        ids = data.get(
-            "published_ids",
-            []
-        )
+        raw_ids = data.get("published_ids", [])
 
-        print(
-            f"RAW IDS FROM FILE: {ids}"
-        )
+        published_ids = set()
 
-        print(
-            f"IDS TYPES: "
-            f"{[type(x).__name__ for x in ids]}"
-        )
+        for item in raw_ids:
 
-        published_ids = {
-            int(product_id)
-            for product_id in ids
-        }
+            try:
+                published_ids.add(int(item))
+            except (ValueError, TypeError):
+                continue
+
+        print(f"Previously published products: {len(published_ids)}")
 
         return published_ids
 
-    except Exception as e:
+    except Exception as error:
 
-        print(
-            f"WARNING: Could not read state file: {e}"
+        raise RuntimeError(
+            f"Cannot read state file safely: {error}"
         )
-
-        return set()
 
 
 def save_published_ids(published_ids):
 
     data = {
-        "published_ids": sorted(
-            published_ids
-        )
+        "published_ids": sorted(published_ids)
     }
 
-    temp_file = STATE_FILE.with_suffix(
-        ".tmp"
-    )
+    temp_file = STATE_FILE.with_suffix(".tmp")
 
     with open(
         temp_file,
         "w",
         encoding="utf-8"
-    ) as f:
+    ) as file:
 
         json.dump(
             data,
-            f,
+            file,
             ensure_ascii=False,
             indent=2
         )
 
-    temp_file.replace(
-        STATE_FILE
-    )
+    temp_file.replace(STATE_FILE)
 
 
 # ============================================================
-# Get products from Mixin API
+# AVAILABILITY CHECK
+# ============================================================
+
+def is_available(product):
+
+    value = product.get("available")
+
+    if value is True:
+        return True
+
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value == 1
+
+    if isinstance(value, str):
+        return value.strip().lower() in (
+            "true",
+            "1",
+            "yes"
+        )
+
+    return False
+
+
+# ============================================================
+# PRODUCT URL
+# ============================================================
+
+def get_product_url(product):
+
+    product_id = product.get("id")
+
+    if product_id is None:
+        raise ValueError("Product ID is missing.")
+
+    # First: use an existing full URL from API
+
+    url_fields = [
+        "product_url",
+        "absolute_url",
+        "web_url",
+        "product_link",
+        "url",
+        "link"
+    ]
+
+    for key in url_fields:
+
+        value = product.get(key)
+
+        if isinstance(value, str):
+
+            value = value.strip()
+
+            if value.startswith("https://") or value.startswith("http://"):
+                return value
+
+    # Second: use product slug
+
+    slug_fields = [
+        "slug",
+        "seo_slug",
+        "permalink"
+    ]
+
+    for key in slug_fields:
+
+        slug = product.get(key)
+
+        if not isinstance(slug, str):
+            continue
+
+        slug = slug.strip()
+
+        if not slug:
+            continue
+
+        if slug.startswith("https://") or slug.startswith("http://"):
+            return slug
+
+        if slug.startswith("/"):
+            return SITE_URL + slug
+
+        encoded_slug = quote(
+            slug.strip("/"),
+            safe="/-%._~"
+        )
+
+        return (
+            f"{SITE_URL}/product/"
+            f"{product_id}/{encoded_slug}/"
+        )
+
+    # Last fallback: product ID route
+
+    print(
+        f"WARNING: No product slug found for {product_id}. "
+        "Using ID-only URL."
+    )
+
+    return f"{SITE_URL}/product/{product_id}/"
+
+
+# ============================================================
+# GET PRODUCTS
 # ============================================================
 
 def get_products():
 
     headers = {
-        "Authorization": (
-            f"Api-Key {MIXIN_API_KEY}"
-        ),
-        "Accept": "application/json",
+        "Authorization": f"Api-Key {MIXIN_API_KEY}",
+        "Accept": "application/json"
     }
 
     all_products = []
-
     page = 1
 
     while True:
 
-        print(
-            f"Getting products page {page}..."
-        )
+        print(f"Getting products page {page}...")
 
         params = {
             "page": page,
             "page_size": PAGE_SIZE,
             "ordering": "-creation_date",
-            "available": "true",
+            "available": "true"
         }
 
-        response = requests.get(
+        response = session.get(
             MIXIN_API_URL,
             headers=headers,
             params=params,
-            timeout=30,
+            timeout=REQUEST_TIMEOUT
         )
 
         response.raise_for_status()
 
-        data = response.json()
+        result = response.json()
 
-        products = data.get(
-            "data",
-            []
-        )
+        products = result.get("data", [])
+
+        if not isinstance(products, list):
+            raise RuntimeError(
+                "Invalid products API response."
+            )
 
         print(
-            f"Received {len(products)} "
-            f"products from page {page}."
+            f"Received {len(products)} products "
+            f"from page {page}."
         )
 
-        all_products.extend(
-            products
-        )
+        all_products.extend(products)
 
-        pagination = data.get(
-            "pagination",
-            {}
-        )
+        pagination = result.get("pagination", {})
 
-        has_next = pagination.get(
-            "has_next",
-            False
-        )
+        has_next = pagination.get("has_next", False)
 
         if not has_next or not products:
             break
 
         page += 1
 
+        if page > 100:
+            raise RuntimeError(
+                "Pagination safety limit reached."
+            )
+
     print(
-        f"Total available products received: "
-        f"{len(all_products)}"
+        f"Total products received: {len(all_products)}"
     )
 
     return all_products
 
 
-    # --------------------------------------------------------
-    # Find new products
-    # --------------------------------------------------------
-
-    new_products = []
-
-    for product in products:
-
-        # ----------------------------------------------------
-        # فقط محصولات موجود
-        # ----------------------------------------------------
-
-        available = product.get("available")
-
-        if available is not True:
-            continue
-
-        product_id = product.get(
-            "id"
-        )
-
-        if product_id is None:
-            continue
-
-        try:
-
-            product_id = int(
-                product_id
-            )
-
-        except Exception:
-
-            continue
-
-        if product_id not in published_ids:
-
-            new_products.append(
-                product
-            )
-
-
 # ============================================================
-# Image helpers
+# IMAGE HELPERS
 # ============================================================
 
 def extract_image_url(image):
 
-    if not image:
-        return None
+    if isinstance(image, str):
+        return image.strip() or None
 
-    # --------------------------------------------------------
-    # Image is already a string
-    # --------------------------------------------------------
-
-    if isinstance(
-        image,
-        str
-    ):
-
-        return image.strip()
-
-
-    # --------------------------------------------------------
-    # Image is a dictionary
-    # --------------------------------------------------------
-
-    if isinstance(
-        image,
-        dict
-    ):
+    if isinstance(image, dict):
 
         possible_keys = [
             "url",
@@ -282,160 +321,90 @@ def extract_image_url(image):
             "file",
             "original",
             "original_url",
-            "image_url",
+            "image_url"
         ]
 
         for key in possible_keys:
 
-            value = image.get(
-                key
-            )
+            value = image.get(key)
 
-            if isinstance(
-                value,
-                str
-            ) and value.strip():
-
+            if isinstance(value, str) and value.strip():
                 return value.strip()
 
-            # Sometimes the value itself is another dictionary
-            if isinstance(
-                value,
-                dict
-            ):
+            if isinstance(value, dict):
 
-                nested_url = extract_image_url(
-                    value
-                )
+                nested = extract_image_url(value)
 
-                if nested_url:
-                    return nested_url
+                if nested:
+                    return nested
 
     return None
 
 
-def normalize_image_url(image_url):
+def normalize_image_url(url):
 
-    if not image_url:
+    if not url:
         return None
 
-    # Safety check
-    if not isinstance(
-        image_url,
-        str
-    ):
+    if not isinstance(url, str):
         return None
 
-    image_url = image_url.strip()
+    url = url.strip()
 
-    if not image_url:
+    if not url:
         return None
 
-    if image_url.startswith(
-        "http://"
-    ):
-        return image_url
+    if url.startswith("https://") or url.startswith("http://"):
+        return url
 
-    if image_url.startswith(
-        "https://"
-    ):
-        return image_url
+    if url.startswith("//"):
+        return "https:" + url
 
-    if image_url.startswith(
-        "//"
-    ):
-        return "https:" + image_url
+    if url.startswith("/"):
+        return SITE_URL + url
 
-    if image_url.startswith(
-        "/"
-    ):
-        return SITE_URL + image_url
-
-    return image_url
+    return None
 
 
 def get_product_images(product):
 
     images = []
 
-    # --------------------------------------------------------
-    # Default image
-    # --------------------------------------------------------
-
-    default_image = product.get(
-        "default_image"
+    default_image = extract_image_url(
+        product.get("default_image")
     )
 
-    default_image_url = extract_image_url(
-        default_image
-    )
+    if default_image:
+        images.append(default_image)
 
-    if default_image_url:
+    product_images = product.get("images", [])
 
-        images.append(
-            default_image_url
-        )
+    if isinstance(product_images, list):
 
+        for image in product_images:
 
-    # --------------------------------------------------------
-    # Product images
-    # --------------------------------------------------------
+            image_url = extract_image_url(image)
 
-    product_images = product.get(
-        "images",
-        []
-    )
-
-    if not isinstance(
-        product_images,
-        list
-    ):
-
-        product_images = []
-
-
-    for image in product_images:
-
-        image_url = extract_image_url(
-            image
-        )
-
-        if image_url:
-
-            images.append(
-                image_url
-            )
-
-
-    # --------------------------------------------------------
-    # Normalize + remove duplicates
-    # --------------------------------------------------------
+            if image_url:
+                images.append(image_url)
 
     result = []
 
     for image in images:
 
-        image = normalize_image_url(
-            image
-        )
+        image = normalize_image_url(image)
 
-        if (
-            image
-            and image not in result
-        ):
+        if image and image not in result:
+            result.append(image)
 
-            result.append(
-                image
-            )
-
-        if len(result) >= 3:
+        if len(result) >= MAX_IMAGES:
             break
 
     return result
 
 
 # ============================================================
-# Formatting
+# PRICE FORMATTING
 # ============================================================
 
 def format_price(price):
@@ -445,90 +414,59 @@ def format_price(price):
 
     try:
 
-        number = int(
-            float(price)
-        )
+        number = int(float(price))
 
-        return (
-            f"{number:,} تومان"
-        )
+        return f"{number:,} تومان"
 
-    except Exception:
+    except (ValueError, TypeError):
 
-        return (
-            f"{price} تومان"
-        )
+        return str(price)
 
 
 def get_discount_info(product):
 
-    price = product.get(
-        "price"
-    )
+    price = product.get("price")
 
-    compare_at_price = product.get(
-        "compare_at_price"
-    )
+    old_price = product.get("compare_at_price")
 
-    if (
-        not price
-        or not compare_at_price
-    ):
+    if price is None or old_price is None:
         return None
 
     try:
 
         price = float(price)
+        old_price = float(old_price)
 
-        compare_at_price = float(
-            compare_at_price
-        )
-
-        if compare_at_price <= price:
+        if price <= 0 or old_price <= price:
             return None
 
-        discount_percent = round(
-            (
-                (
-                    compare_at_price
-                    - price
-                )
-                / compare_at_price
-            )
-            * 100
+        percent = round(
+            ((old_price - price) / old_price) * 100
         )
 
         return {
-            "percent": discount_percent,
-            "old_price": format_price(
-                compare_at_price
-            ),
+            "percent": percent,
+            "old_price": format_price(old_price)
         }
 
-    except Exception:
+    except (ValueError, TypeError):
 
         return None
 
 
 # ============================================================
-# Telegram caption
+# TELEGRAM CAPTION
 # ============================================================
 
 def create_caption(product):
 
-    name = product.get(
-        "name",
-        "محصول"
+    name = str(
+        product.get("name") or "محصول"
     )
 
-    brand = product.get(
-        "brand"
-    )
+    brand = product.get("brand")
 
-    if isinstance(
-        brand,
-        dict
-    ):
+    if isinstance(brand, dict):
 
         brand_name = (
             brand.get("name")
@@ -538,379 +476,299 @@ def create_caption(product):
 
     else:
 
-        brand_name = (
-            brand
-            or ""
-        )
+        brand_name = str(brand or "")
 
     price = format_price(
         product.get("price")
     )
 
-    discount = get_discount_info(
-        product
-    )
+    discount = get_discount_info(product)
 
-    product_url = get_product_url(
-        product
-    )
+    product_url = get_product_url(product)
 
-    lines = []
-
-    lines.append(
+    lines = [
         f"🛍️ {name}"
-    )
+    ]
 
     if brand_name:
+        lines.append(f"🏷️ برند: {brand_name}")
 
-        lines.append(
-            f"🏷️ برند: {brand_name}"
-        )
+    lines.append(f"💰 قیمت: {price}")
 
     if discount:
 
         lines.append(
-            f"💰 قیمت: {price}"
+            f"🔥 تخفیف: {discount['percent']}٪"
         )
 
         lines.append(
-            f"🔥 تخفیف: "
-            f"{discount['percent']}٪"
+            f"💵 قیمت قبل: {discount['old_price']}"
         )
 
-        lines.append(
-            f"💵 قیمت قبل: "
-            f"{discount['old_price']}"
-        )
-
-    else:
-
-        lines.append(
-            f"💰 قیمت: {price}"
-        )
-
-    lines.append("")
-
-    lines.append(
-        f"🛒 خرید محصول:\n"
-        f"{product_url}"
-    )
-
-    lines.append("")
-
-    lines.append(
-        "✨ Mahza Collection"
-    )
-
-    lines.append(
+    lines.extend([
+        "",
+        "🛒 خرید محصول:",
+        product_url,
+        "",
+        "✨ Mahza Collection",
         "🌐 www.mahzacollection.ir"
-    )
+    ])
 
-    return "\n".join(
-        lines
-    )
+    caption = "\n".join(lines)
+
+    # Telegram photo caption limit is 1024 characters.
+    if len(caption) > 1024:
+
+        suffix = (
+            f"\n\n🛒 خرید محصول:\n{product_url}"
+            f"\n\n✨ Mahza Collection"
+        )
+
+        available_length = 1024 - len(suffix)
+
+        short_name = name[:max(20, available_length - 30)]
+
+        caption = (
+            f"🛍️ {short_name}"
+            f"{suffix}"
+        )
+
+    return caption
 
 
 # ============================================================
-# Telegram API
+# TELEGRAM API
 # ============================================================
 
 def telegram_api_url(method):
 
     return (
         f"https://api.telegram.org/"
-        f"bot{TELEGRAM_BOT_TOKEN}/"
-        f"{method}"
+        f"bot{TELEGRAM_BOT_TOKEN}/{method}"
     )
 
 
-def send_product_to_telegram(product):
+def telegram_request(method, data, timeout=60):
 
-    product_id = product.get(
-        "id"
-    )
-
-    product_name = product.get(
-        "name",
-        "محصول"
-    )
-
-    images = get_product_images(
-        product
-    )
-
-    caption = create_caption(
-        product
-    )
-
-    print(
-        f"Sending product "
-        f"{product_id}: "
-        f"{product_name}"
-    )
-
-    print(
-        f"Images found: "
-        f"{len(images)}"
-    )
-
-    # --------------------------------------------------------
-    # No image
-    # --------------------------------------------------------
-
-    if not images:
-
-        response = requests.post(
-
-            telegram_api_url(
-                "sendMessage"
-            ),
-
-            data={
-                "chat_id":
-                    TELEGRAM_CHANNEL_ID,
-
-                "text":
-                    caption,
-            },
-
-            timeout=30,
-        )
-
-        response.raise_for_status()
-
-        return True
-
-
-    # --------------------------------------------------------
-    # One image
-    # --------------------------------------------------------
-
-    if len(images) == 1:
-
-        response = requests.post(
-
-            telegram_api_url(
-                "sendPhoto"
-            ),
-
-            data={
-                "chat_id":
-                    TELEGRAM_CHANNEL_ID,
-
-                "photo":
-                    images[0],
-
-                "caption":
-                    caption,
-            },
-
-            timeout=60,
-        )
-
-        response.raise_for_status()
-
-        return True
-
-
-    # --------------------------------------------------------
-    # Multiple images - maximum 3
-    # --------------------------------------------------------
-
-    media = []
-
-    for index, image_url in enumerate(
-        images[:3]
-    ):
-
-        item = {
-            "type": "photo",
-            "media": image_url,
-        }
-
-        if index == 0:
-
-            item["caption"] = (
-                caption
-            )
-
-            item["parse_mode"] = (
-                "HTML"
-            )
-
-        media.append(
-            item
-        )
-
-    response = requests.post(
-
-        telegram_api_url(
-            "sendMediaGroup"
-        ),
-
-        data={
-            "chat_id":
-                TELEGRAM_CHANNEL_ID,
-
-            "media":
-                json.dumps(
-                    media,
-                    ensure_ascii=False
-                ),
-        },
-
-        timeout=90,
+    response = session.post(
+        telegram_api_url(method),
+        data=data,
+        timeout=timeout
     )
 
     response.raise_for_status()
+
+    result = response.json()
+
+    if not result.get("ok"):
+
+        raise RuntimeError(
+            f"Telegram API error: {result}"
+        )
+
+    return result
+
+
+# ============================================================
+# SEND PRODUCT
+# ============================================================
+
+def send_product_to_telegram(product):
+
+    product_id = product.get("id")
+
+    product_name = product.get("name", "محصول")
+
+    # Double-check availability
+
+    if not is_available(product):
+
+        print(
+            f"SKIPPED: Product {product_id} is unavailable."
+        )
+
+        return False
+
+    images = get_product_images(product)
+
+    caption = create_caption(product)
+
+    print(
+        f"Sending product {product_id}: {product_name}"
+    )
+
+    print(
+        f"Images found: {len(images)}"
+    )
+
+    # No image
+
+    if not images:
+
+        telegram_request(
+            "sendMessage",
+            {
+                "chat_id": TELEGRAM_CHANNEL_ID,
+                "text": caption
+            }
+        )
+
+        return True
+
+    # One image
+
+    if len(images) == 1:
+
+        telegram_request(
+            "sendPhoto",
+            {
+                "chat_id": TELEGRAM_CHANNEL_ID,
+                "photo": images[0],
+                "caption": caption
+            }
+        )
+
+        return True
+
+    # Multiple images
+
+    media = []
+
+    for index, image_url in enumerate(images[:MAX_IMAGES]):
+
+        item = {
+            "type": "photo",
+            "media": image_url
+        }
+
+        if index == 0:
+            item["caption"] = caption
+
+        media.append(item)
+
+    telegram_request(
+        "sendMediaGroup",
+        {
+            "chat_id": TELEGRAM_CHANNEL_ID,
+            "media": json.dumps(
+                media,
+                ensure_ascii=False
+            )
+        },
+        timeout=90
+    )
 
     return True
 
 
 # ============================================================
-# Main
+# MAIN
 # ============================================================
 
 def main():
 
     print("=" * 60)
-
-    print(
-        "Mahza Collection "
-        "Telegram Publisher"
-    )
-
+    print("Mahza Collection Telegram Publisher")
     print("=" * 60)
 
-    print(
-        f"TEST_MODE = "
-        f"{TEST_MODE}"
-    )
+    print(f"TEST_MODE = {TEST_MODE}")
 
     print(
-        f"MAX_PRODUCTS_PER_RUN = "
-        f"{MAX_PRODUCTS_PER_RUN}"
+        f"MAX_PRODUCTS_PER_RUN = {MAX_PRODUCTS_PER_RUN}"
     )
 
+    # Load state
 
-    # --------------------------------------------------------
-    # Load published IDs
-    # --------------------------------------------------------
-
-    published_ids = (
-        load_published_ids()
-    )
+    published_ids = load_published_ids()
 
     print(
-        f"Published IDs loaded: "
-        f"{sorted(published_ids)}"
+        f"Published IDs loaded: {len(published_ids)}"
     )
 
-    print(
-        f"Previously published "
-        f"products: "
-        f"{len(published_ids)}"
-    )
-
-
-    # --------------------------------------------------------
     # Get products
-    # --------------------------------------------------------
 
     products = get_products()
 
-
-    # --------------------------------------------------------
-    # Find new products
-    # --------------------------------------------------------
+    # Find new available products
 
     new_products = []
 
     for product in products:
 
-        product_id = product.get(
-            "id"
-        )
+        if not isinstance(product, dict):
+            continue
+
+        if not is_available(product):
+            continue
+
+        product_id = product.get("id")
 
         if product_id is None:
             continue
 
         try:
-
-            product_id = int(
-                product_id
-            )
-
-        except Exception:
-
+            product_id = int(product_id)
+        except (ValueError, TypeError):
             continue
 
         if product_id not in published_ids:
-
-            new_products.append(
-                product
-            )
-
+            new_products.append(product)
 
     print(
-        f"New products found: "
-        f"{len(new_products)}"
+        f"New available products found: {len(new_products)}"
     )
 
+    # Newest first
 
-    # --------------------------------------------------------
+    def sort_id(product):
+        try:
+            return int(product.get("id", 0))
+        except (ValueError, TypeError):
+            return 0
+
+    new_products.sort(
+        key=sort_id,
+        reverse=True
+    )
+
     # Select products
-    # --------------------------------------------------------
 
     if TEST_MODE:
 
-        selected_products = (
-            new_products[:1]
-        )
+        selected_products = new_products[:1]
+
+    elif MAX_PRODUCTS_PER_RUN > 0:
+
+        selected_products = new_products[
+            :MAX_PRODUCTS_PER_RUN
+        ]
 
     else:
 
-        if MAX_PRODUCTS_PER_RUN > 0:
-
-            selected_products = (
-                new_products[
-                    :MAX_PRODUCTS_PER_RUN
-                ]
-            )
-
-        else:
-
-            selected_products = (
-                new_products
-            )
-
+        selected_products = new_products
 
     print(
-        f"Products selected "
-        f"for this run: "
-        f"{len(selected_products)}"
+        f"Products selected: {len(selected_products)}"
     )
 
+    success_count = 0
+    error_count = 0
 
-    # --------------------------------------------------------
-    # Publish products
-    # --------------------------------------------------------
+    # Publish
 
     for product in selected_products:
 
-        product_id = product.get(
-            "id"
-        )
+        product_id = product.get("id")
 
         try:
 
-            success = (
-                send_product_to_telegram(
-                    product
-                )
+            success = send_product_to_telegram(
+                product
             )
 
             if success:
+
+                # Save only after successful Telegram response
 
                 published_ids.add(
                     int(product_id)
@@ -920,39 +778,49 @@ def main():
                     published_ids
                 )
 
+                success_count += 1
+
                 print(
-                    f"SUCCESS: product "
-                    f"{product_id} "
-                    f"published and saved."
+                    f"SUCCESS: Product {product_id} published."
                 )
 
                 print(
-                    f"Published IDs now: "
-                    f"{len(published_ids)}"
+                    f"Saved published IDs: {len(published_ids)}"
                 )
 
-        except Exception as e:
+        except Exception as error:
+
+            error_count += 1
 
             print(
-                f"ERROR publishing "
-                f"product {product_id}: "
-                f"{e}"
+                f"ERROR publishing product {product_id}: {error}"
             )
 
-        time.sleep(2)
+        time.sleep(DELAY_BETWEEN_PRODUCTS)
 
+    # Summary
 
     print("=" * 60)
 
-    print(
-        "Finished."
-    )
+    print("PUBLISHING SUMMARY")
+
+    print(f"New products found: {len(new_products)}")
+
+    print(f"Products selected: {len(selected_products)}")
+
+    print(f"Successfully published: {success_count}")
+
+    print(f"Errors: {error_count}")
+
+    print(f"Total saved IDs: {len(published_ids)}")
+
+    print("Finished.")
 
     print("=" * 60)
 
 
 # ============================================================
-# Start program
+# START
 # ============================================================
 
 if __name__ == "__main__":
