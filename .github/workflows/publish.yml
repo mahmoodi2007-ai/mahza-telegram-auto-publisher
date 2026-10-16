@@ -42,7 +42,7 @@ jobs:
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
 
           TEST_MODE: "false"
-          MAX_PRODUCTS_PER_RUN: "0"
+          MAX_PRODUCTS_PER_RUN: "3"
 
         run: |
           echo "===== STATE FILE BEFORE BOT ====="
