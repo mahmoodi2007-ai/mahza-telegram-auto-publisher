@@ -700,6 +700,7 @@ def bale_request(method, data, timeout=90):
 def load_bale_published_ids():
     if not BALE_STATE_FILE.exists():
         print("Bale state file not found; starting Bale publishing history.")
+        save_bale_published_ids(set())
         return set()
 
     try:
