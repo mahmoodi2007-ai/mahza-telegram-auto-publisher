@@ -40,6 +40,8 @@ jobs:
           MIXIN_API_KEY: ${{ secrets.MIXIN_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          BALE_BOT_TOKEN: ${{ secrets.BALE_BOT_TOKEN }}
+          BALE_CHANNEL_ID: ${{ secrets.BALE_CHANNEL_ID }}
 
           TEST_MODE: "false"
           MAX_PRODUCTS_PER_RUN: "3"
@@ -47,6 +49,8 @@ jobs:
         run: |
           echo "===== STATE FILE BEFORE BOT ====="
           cat published_products.json
+          echo "===== BALE STATE FILE ====="
+          if [ -f published_bale_products.json ]; then cat published_bale_products.json; else echo "Not created yet"; fi
           echo "===== END STATE FILE ====="
           python bot.py
         
@@ -57,7 +61,7 @@ jobs:
           git config user.name "Mahza Collection Bot"
           git config user.email "mahza-collection-bot@users.noreply.github.com"
 
-          git add published_products.json
+          git add published_products.json published_bale_products.json
 
           if git diff --cached --quiet; then
             echo "No state changes to commit."
