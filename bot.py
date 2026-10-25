@@ -18,6 +18,7 @@ MIXIN_API_URL = "https://mahzacollection.ir/api/v4/products/"
 SITE_URL = "https://mahzacollection.ir"
 
 STATE_FILE = Path("published_products.json")
+BALE_STATE_FILE = Path("published_bale_products.json")
 
 PAGE_SIZE = 50
 MAX_IMAGES = 3
@@ -27,6 +28,8 @@ DELAY_BETWEEN_PRODUCTS = 2
 MIXIN_API_KEY = os.getenv("MIXIN_API_KEY", "").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "").strip()
+BALE_BOT_TOKEN = os.getenv("BALE_BOT_TOKEN", "").strip()
+BALE_CHANNEL_ID = os.getenv("BALE_CHANNEL_ID", "").strip()
 
 TEST_MODE = os.getenv("TEST_MODE", "false").lower() == "true"
 
@@ -50,6 +53,12 @@ if not TELEGRAM_BOT_TOKEN:
 
 if not TELEGRAM_CHANNEL_ID:
     raise RuntimeError("TELEGRAM_CHANNEL_ID is missing.")
+
+if not BALE_BOT_TOKEN:
+    raise RuntimeError("BALE_BOT_TOKEN is missing.")
+
+if not BALE_CHANNEL_ID:
+    raise RuntimeError("BALE_CHANNEL_ID is missing.")
 
 
 # ============================================================
@@ -662,6 +671,123 @@ def send_product_to_telegram(product):
 
 
 # ============================================================
+# BALE API
+# ============================================================
+
+def bale_api_url(method):
+    return f"https://tapi.bale.ai/bot{BALE_BOT_TOKEN}/{method}"
+
+
+def bale_request(method, data, timeout=90):
+    response = session.post(
+        bale_api_url(method),
+        data=data,
+        timeout=timeout
+    )
+    response.raise_for_status()
+    result = response.json()
+
+    if not result.get("ok"):
+        # Do not print credentials; API response contains no token.
+        raise RuntimeError(
+            f"Bale API error ({method}): "
+            f"{result.get('description', 'Unknown error')}"
+        )
+
+    return result
+
+
+def load_bale_published_ids():
+    if not BALE_STATE_FILE.exists():
+        print("Bale state file not found; starting Bale publishing history.")
+        return set()
+
+    try:
+        with open(BALE_STATE_FILE, "r", encoding="utf-8") as file:
+            data = json.load(file)
+
+        ids = set()
+        for item in data.get("published_ids", []):
+            try:
+                ids.add(int(item))
+            except (ValueError, TypeError):
+                continue
+
+        print(f"Previously published to Bale: {len(ids)}")
+        return ids
+
+    except Exception as error:
+        raise RuntimeError(f"Cannot read Bale state file safely: {error}")
+
+
+def save_bale_published_ids(published_ids):
+    data = {"published_ids": sorted(published_ids)}
+    temp_file = BALE_STATE_FILE.with_suffix(".tmp")
+
+    with open(temp_file, "w", encoding="utf-8") as file:
+        json.dump(data, file, ensure_ascii=False, indent=2)
+
+    temp_file.replace(BALE_STATE_FILE)
+
+
+def send_product_to_bale(product):
+    product_id = product.get("id")
+    product_name = product.get("name", "محصول")
+
+    if not is_available(product):
+        print(f"BALE SKIPPED: Product {product_id} is unavailable.")
+        return False
+
+    images = get_product_images(product)
+    caption = create_caption(product)
+
+    print(f"Sending product {product_id} to Bale: {product_name}")
+    print(f"Bale images found: {len(images)}")
+
+    if not images:
+        bale_request(
+            "sendMessage",
+            {
+                "chat_id": BALE_CHANNEL_ID,
+                "text": caption
+            }
+        )
+        return True
+
+    if len(images) == 1:
+        bale_request(
+            "sendPhoto",
+            {
+                "chat_id": BALE_CHANNEL_ID,
+                "photo": images[0],
+                "caption": caption
+            }
+        )
+        return True
+
+    media = []
+    for index, image_url in enumerate(images[:MAX_IMAGES]):
+        item = {
+            "type": "photo",
+            "media": image_url
+        }
+        if index == 0:
+            item["caption"] = caption
+        media.append(item)
+
+    bale_request(
+        "sendMediaGroup",
+        {
+            "chat_id": BALE_CHANNEL_ID,
+            "media": json.dumps(media, ensure_ascii=False)
+        },
+        timeout=120
+    )
+    return True
+
+
+
+# ============================================================
 # MAIN
 # ============================================================
 
@@ -688,6 +814,63 @@ def main():
     # Get products
 
     products = get_products()
+
+    # Publish independently to Bale. This has its own state file so
+    # the existing Telegram history does not block the initial Bale rollout.
+    bale_published_ids = load_bale_published_ids()
+    new_bale_products = []
+
+    for product in products:
+        if not isinstance(product, dict) or not is_available(product):
+            continue
+
+        product_id = product.get("id")
+        if product_id is None:
+            continue
+
+        try:
+            product_id = int(product_id)
+        except (ValueError, TypeError):
+            continue
+
+        if product_id not in bale_published_ids:
+            new_bale_products.append(product)
+
+    def bale_sort_id(product):
+        try:
+            return int(product.get("id", 0))
+        except (ValueError, TypeError):
+            return 0
+
+    new_bale_products.sort(key=bale_sort_id, reverse=True)
+
+    if TEST_MODE:
+        selected_bale_products = new_bale_products[:1]
+    elif MAX_PRODUCTS_PER_RUN > 0:
+        selected_bale_products = new_bale_products[:MAX_PRODUCTS_PER_RUN]
+    else:
+        selected_bale_products = new_bale_products
+
+    print(f"New available products for Bale: {len(new_bale_products)}")
+    print(f"Products selected for Bale: {len(selected_bale_products)}")
+
+    bale_success_count = 0
+    bale_error_count = 0
+
+    for product in selected_bale_products:
+        product_id = product.get("id")
+        try:
+            success = send_product_to_bale(product)
+            if success:
+                bale_published_ids.add(int(product_id))
+                save_bale_published_ids(bale_published_ids)
+                bale_success_count += 1
+                print(f"BALE SUCCESS: Product {product_id} published.")
+        except Exception as error:
+            bale_error_count += 1
+            print(f"BALE ERROR publishing product {product_id}: {error}")
+
+        time.sleep(DELAY_BETWEEN_PRODUCTS)
 
     # Find new available products
 
@@ -812,7 +995,10 @@ def main():
 
     print(f"Errors: {error_count}")
 
-    print(f"Total saved IDs: {len(published_ids)}")
+    print(f"Total saved Telegram IDs: {len(published_ids)}")
+    print(f"Bale successfully published: {bale_success_count}")
+    print(f"Bale errors: {bale_error_count}")
+    print(f"Total saved Bale IDs: {len(bale_published_ids)}")
 
     print("Finished.")
 
